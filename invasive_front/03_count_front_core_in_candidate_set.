@@ -1,0 +1,149 @@
+# ============================================
+# STEP15C — Count FRONT/CORE spot counts in CANDIDATE set (thr>0.10)
+# - uses same pathology + neighbor definition
+# - counts front/core among candidate spots (not strict)
+# Saves a CSV report to Google Drive
+# ============================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+import numpy as np
+import pandas as pd
+from sklearn.neighbors import NearestNeighbors
+
+ROOT = "/content/drive/MyDrive/TÜBİTAK"
+
+# Inputs
+CAND_REPORT = f"{ROOT}/outputs/STEP15_INVASIVE_FRONT/REPORTS/pathology_annotation_candidates.csv"
+CAND_BASE   = f"{ROOT}/outputs/STEP11_CANCER_RICH_SPOTS"          # candidate h5ad thr>0.10
+POS_BASE    = f"{ROOT}/extracted/spatial/spatial"
+
+# Outputs
+OUT_DIR = f"{ROOT}/outputs/STEP15_INVASIVE_FRONT/REPORTS"
+os.makedirs(OUT_DIR, exist_ok=True)
+OUT_CSV = f"{OUT_DIR}/candidate_front_core_counts.csv"
+
+samples = ["1142243F", "1160920F", "CID4290", "CID4465", "CID44971", "CID4535"]
+
+# -------- helpers --------
+def read_positions(pos_path):
+    df = pd.read_csv(pos_path, header=None)
+    df = df.iloc[:, :6]
+    df.columns = ["barcode", "in_tissue", "array_row", "array_col", "pxl_row", "pxl_col"]
+    df["barcode"] = df["barcode"].astype(str)
+    return df.set_index("barcode")
+
+def read_table(fp):
+    try:
+        return pd.read_csv(fp)
+    except Exception:
+        return pd.read_csv(fp, sep="\t")
+
+def normalize_class(x):
+    return str(x).strip().lower()
+
+def classify_pathology(val):
+    v = normalize_class(val)
+    if "invasive" in v: return "invasive"
+    if "dcis" in v: return "dcis"
+    if ("stroma" in v) or ("adipo" in v): return "stroma_adipose"
+    if ("normal" in v) or ("duct" in v): return "normal_ductal"
+    if ("lymph" in v) or ("aggregate" in v): return "lymph_agg"
+    return "other"
+
+# Load candidate report and choose best file per sample
+rep = pd.read_csv(CAND_REPORT)
+rep = rep[rep["status"] == "CANDIDATE"].copy()
+rep = rep.sort_values(["sample", "overlap_spots", "label_col_score"], ascending=[True, False, False])
+best = rep.groupby("sample").head(1)
+
+target_contact = set(["stroma_adipose", "normal_ductal", "dcis"])
+
+rows = []
+
+for s in samples:
+    cand_h5ad = f"{CAND_BASE}/{s}/spatial_{s}__cancer_rich_0.10.h5ad"
+    pos_path  = f"{POS_BASE}/{s}_spatial/tissue_positions_list.csv"
+
+    if not os.path.exists(cand_h5ad):
+        continue
+    if not os.path.exists(pos_path):
+        continue
+    if s not in best["sample"].values:
+        continue
+
+    # candidate spot ids
+    import scanpy as sc
+    ad_cand = sc.read_h5ad(cand_h5ad)
+    cand_ids = set(ad_cand.obs_names.astype(str).tolist())
+
+    # full grid positions
+    pos = read_positions(pos_path)
+
+    # pathology file
+    row = best[best["sample"] == s].iloc[0]
+    meta_fp = row["file_path"]
+    bc_col = row["barcode_col"]
+    label_col = row["suggested_label_col"]  # expected classification
+
+    meta = read_table(meta_fp)
+    meta[bc_col] = meta[bc_col].astype(str)
+    meta = meta.set_index(bc_col)
+
+    # join pathology onto full grid
+    df = pos.join(meta[[label_col]], how="left")
+    df.rename(columns={label_col: "pathology_label_raw"}, inplace=True)
+    df["pathology_category"] = df["pathology_label_raw"].apply(classify_pathology)
+
+    # neighbor graph over full grid
+    coords = df[["array_col", "array_row"]].astype(float).values
+    nn = NearestNeighbors(n_neighbors=7, metric="euclidean")
+    nn.fit(coords)
+    neigh_idx = nn.kneighbors(return_distance=False)
+
+    cats = df["pathology_category"].values
+    barcodes = df.index.values
+
+    # evaluate front/core on full invasive spots
+    is_invasive = (cats == "invasive")
+    front = np.zeros(len(df), dtype=bool)
+    core  = np.zeros(len(df), dtype=bool)
+
+    for i in range(len(df)):
+        if not is_invasive[i]:
+            continue
+        neigh = neigh_idx[i, 1:]
+        neigh_cats = set(cats[neigh])
+        if len(neigh_cats.intersection(target_contact)) > 0:
+            front[i] = True
+        if all(cats[j] == "invasive" for j in neigh):
+            core[i] = True
+
+    # restrict to candidate spots
+    is_cand = np.array([bc in cand_ids for bc in barcodes], dtype=bool)
+
+    n_cand = int(is_cand.sum())
+    n_front_cand = int(np.sum(is_cand & front))
+    n_core_cand  = int(np.sum(is_cand & core))
+    n_invasive_cand = int(np.sum(is_cand & is_invasive))
+
+    rows.append({
+        "sample": s,
+        "n_candidate_spots": n_cand,
+        "n_invasive_in_candidate": n_invasive_cand,
+        "n_front_in_candidate": n_front_cand,
+        "n_core_in_candidate": n_core_cand,
+        "pathology_file": meta_fp
+    })
+
+    print(f"{s}: cand={n_cand} | invasive={n_invasive_cand} | front={n_front_cand} | core={n_core_cand}")
+
+out = pd.DataFrame(rows)
+out.to_csv(OUT_CSV, index=False)
+
+print("\nSAVED TO DRIVE ✅")
+print("Path:", OUT_CSV)
+print("Saved OK?:", os.path.exists(OUT_CSV))
+print(out)
