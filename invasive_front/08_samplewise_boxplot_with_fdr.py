@@ -1,1 +1,111 @@
+# ============================================
+# STEP16E — Sample-wise boxplot + BH-FDR labels
+# - computes per-sample MWU p-values
+# - adds BH-FDR (q-values)
+# - saves updated table + updated figure to Drive
+# ============================================
 
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import mannwhitneyu
+
+ROOT = "/content/drive/MyDrive/TÜBİTAK"
+RES_BASE = f"{ROOT}/outputs/STEP16_CANDIDATE_CYTOTRACE2/RESULTS"
+FIG_DIR = f"{ROOT}/outputs/STEP16_CANDIDATE_CYTOTRACE2/FIGURES"
+os.makedirs(FIG_DIR, exist_ok=True)
+
+samples = ["1142243F", "1160920F", "CID4290", "CID4465", "CID44971", "CID4535"]
+KEY = "cytotrace2_potency_score"
+
+rows = []
+front_data = []
+core_data = []
+
+for s in samples:
+    fp = f"{RES_BASE}/{s}/candidate_front_core_scored_{s}.csv"
+    df = pd.read_csv(fp, index_col=0)
+
+    f = df[df["region"]=="front"][KEY].astype(float).values
+    c = df[df["region"]=="core"][KEY].astype(float).values
+
+    p = np.nan
+    if len(f) > 0 and len(c) > 0:
+        _, p = mannwhitneyu(f, c, alternative="two-sided")
+
+    rows.append({
+        "sample": s,
+        "n_front": len(f),
+        "n_core": len(c),
+        "front_median": float(np.median(f)) if len(f) else np.nan,
+        "core_median": float(np.median(c)) if len(c) else np.nan,
+        "delta_median": (float(np.median(f)) - float(np.median(c))) if (len(f) and len(c)) else np.nan,
+        "pvalue_mwu": float(p) if not np.isnan(p) else np.nan
+    })
+
+    front_data.append(f)
+    core_data.append(c)
+
+table = pd.DataFrame(rows)
+
+# ---- BH-FDR
+pvals = table["pvalue_mwu"].astype(float).values
+m = len(pvals)
+order = np.argsort(pvals)
+rank = np.empty(m, dtype=int)
+rank[order] = np.arange(1, m+1)
+
+fdr = (pvals * m) / rank
+fdr_sorted = np.minimum.accumulate(fdr[order][::-1])[::-1]
+qvals = np.empty(m)
+qvals[order] = np.minimum(fdr_sorted, 1.0)
+table["fdr_bh"] = qvals
+
+# Save table
+table_path = f"{FIG_DIR}/samplewise_front_vs_core_table_with_fdr.csv"
+table.to_csv(table_path, index=False)
+
+print("SAVED TO DRIVE ✅ (table)")
+print("Path:", table_path)
+print("Saved OK?:", os.path.exists(table_path))
+print(table[["sample","pvalue_mwu","fdr_bh","delta_median"]])
+
+# ---- Plot: two boxes per sample
+positions = []
+data_to_plot = []
+labels = []
+
+pos = 1
+for i, s in enumerate(samples):
+    data_to_plot.append(front_data[i])
+    data_to_plot.append(core_data[i])
+    positions.extend([pos, pos+0.35])
+    labels.extend([f"{s}\nFront", f"{s}\nCore"])
+    pos += 1.2
+
+plt.figure(figsize=(16, 6))
+plt.boxplot(data_to_plot, positions=positions, widths=0.3, showfliers=False)
+plt.xticks(positions, labels, rotation=30, ha="right")
+plt.ylabel("CytoTRACE2 potency score")
+plt.title("Sample-wise Front vs Core (candidate set) — MWU p + BH-FDR q")
+
+# Add p and q above each pair
+for i, s in enumerate(samples):
+    pval = table.loc[i, "pvalue_mwu"]
+    qval = table.loc[i, "fdr_bh"]
+    ymax = np.nanmax(np.concatenate([front_data[i], core_data[i]])) if (len(front_data[i]) and len(core_data[i])) else np.nan
+    if not np.isnan(ymax):
+        plt.text(positions[2*i], ymax + 0.01, f"p={pval:.1e}\nq={qval:.1e}", fontsize=9)
+
+out_png = f"{FIG_DIR}/samplewise_front_vs_core_boxplot_with_fdr.png"
+plt.tight_layout()
+plt.savefig(out_png, dpi=220, bbox_inches="tight")
+plt.close()
+
+print("\nSAVED TO DRIVE ✅ (figure)")
+print("Path:", out_png)
+print("Saved OK?:", os.path.exists(out_png))
