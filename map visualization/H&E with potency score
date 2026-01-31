@@ -1,0 +1,344 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+STEP18E: H&E ÜZERİNE POTENCY + FRONT/CORE GÖRSELLEŞTİRME
+================================================================================
+H&E doku görüntüsü üzerine:
+- Potency skorları (renk skalası)
+- Front (kare marker) vs Core (daire marker)
+================================================================================
+"""
+
+#===============================================================================
+# HÜCRE 1: KURULUM
+#===============================================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
+from PIL import Image
+import json
+
+BASE_DIR = "/content/drive/MyDrive/TÜBİTAK"
+OUTPUTS_DIR = f"{BASE_DIR}/outputs"
+EXTRACTED_DIR = f"{BASE_DIR}/extracted"
+CYTOTRACE2_RESULTS_DIR = f"{OUTPUTS_DIR}/STEP16_CANDIDATE_CYTOTRACE2/RESULTS"
+
+SAMPLES = ["1142243F", "1160920F", "CID4290", "CID4465", "CID4535", "CID44971"]
+
+OUTPUT_DIR = f"{OUTPUTS_DIR}/STEP18_MULTIPOTENCY/HE_OVERLAY"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print("✅ Hazır!")
+
+#===============================================================================
+# HÜCRE 2: DOSYALARI BUL (H&E, koordinat, scale factors)
+#===============================================================================
+
+print("\n🔍 Dosyalar aranıyor...")
+
+def find_files(sample):
+    """Her örnek için gerekli dosyaları bul"""
+    files = {'sample': sample}
+
+    # Recursive arama
+    for root, dirs, filenames in os.walk(EXTRACTED_DIR):
+        if sample in root:
+            for f in filenames:
+                full_path = os.path.join(root, f)
+
+                # H&E görüntüsü
+                if f.endswith(('.png', '.jpg', '.jpeg', '.tif')) and 'tissue' in f.lower():
+                    files['image'] = full_path
+                if 'hires' in f.lower() or 'fullres' in f.lower():
+                    files['image'] = full_path
+
+                # Koordinat dosyası
+                if 'tissue_positions' in f:
+                    files['coords'] = full_path
+
+                # Scale factors
+                if 'scalefactors' in f and f.endswith('.json'):
+                    files['scale'] = full_path
+
+    # Alternatif image arama
+    if 'image' not in files:
+        for root, dirs, filenames in os.walk(BASE_DIR):
+            if sample in root:
+                for f in filenames:
+                    if f.endswith(('.png', '.jpg')) and sample in root:
+                        files['image'] = os.path.join(root, f)
+                        break
+
+    return files
+
+sample_files = {}
+for sample in SAMPLES:
+    files = find_files(sample)
+    sample_files[sample] = files
+
+    img_status = "✅" if 'image' in files else "❌"
+    coord_status = "✅" if 'coords' in files else "❌"
+
+    print(f"   {sample}: Image {img_status} | Coords {coord_status}")
+
+#===============================================================================
+# HÜCRE 3: TEK HASTA İÇİN H&E OVERLAY (TEST)
+#===============================================================================
+
+print("\n" + "="*60)
+print("H&E OVERLAY - TEST")
+print("="*60)
+
+# İlk uygun hastayı seç
+test_sample = None
+for sample in SAMPLES:
+    if 'coords' in sample_files[sample]:
+        test_sample = sample
+        break
+
+if test_sample is None:
+    print("❌ Uygun örnek bulunamadı!")
+else:
+    print(f"\n📊 Test örneği: {test_sample}")
+
+    # 1. Verileri yükle
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{test_sample}/candidate_front_core_scored_{test_sample}.csv"
+    df = pd.read_csv(score_file)
+
+    # Spot ID düzelt
+    if 'spot_id' not in df.columns:
+        for col in ['barcode', 'Unnamed: 0']:
+            if col in df.columns:
+                df = df.rename(columns={col: 'spot_id'})
+                break
+
+    # Skor sütunu bul
+    score_col = None
+    for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score']:
+        if col in df.columns:
+            score_col = col
+            break
+
+    # 2. Koordinatları yükle
+    coords = pd.read_csv(sample_files[test_sample]['coords'], header=None)
+
+    if coords.shape[1] >= 6:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row', 'pxl_col'][:coords.shape[1]]
+    elif coords.shape[1] == 5:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row']
+        coords['pxl_col'] = coords['col'] * 100
+
+    coords = coords.rename(columns={'barcode': 'spot_id'})
+
+    # 3. Birleştir
+    merged = df.merge(coords[['spot_id', 'pxl_row', 'pxl_col']], on='spot_id', how='left')
+    merged = merged.dropna(subset=['pxl_row', 'pxl_col'])
+
+    front = merged[merged['region'] == 'front']
+    core = merged[merged['region'] == 'core']
+
+    print(f"   Front: {len(front)} spot")
+    print(f"   Core: {len(core)} spot")
+
+    # 4. Görselleştir (H&E olmadan, sadece koordinatlarla)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Sol panel: Front/Core bölgeleri
+    ax1 = axes[0]
+    ax1.scatter(core['pxl_col'], core['pxl_row'],
+                c='blue', marker='o', s=30, alpha=0.6, label=f'Core (n={len(core)})')
+    ax1.scatter(front['pxl_col'], front['pxl_row'],
+                c='red', marker='s', s=40, alpha=0.8, label=f'Front (n={len(front)})')
+    ax1.set_title(f'{test_sample}\nFront (■ Kare) vs Core (● Daire)', fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper right')
+    ax1.invert_yaxis()
+    ax1.set_aspect('equal')
+    ax1.set_facecolor('lightgray')
+
+    # Sağ panel: Potency skorları
+    ax2 = axes[1]
+
+    # Core (daire)
+    scatter_core = ax2.scatter(
+        core['pxl_col'], core['pxl_row'],
+        c=core[score_col], cmap='RdYlBu_r',
+        marker='o', s=30, alpha=0.7,
+        vmin=0, vmax=0.6
+    )
+
+    # Front (kare)
+    scatter_front = ax2.scatter(
+        front['pxl_col'], front['pxl_row'],
+        c=front[score_col], cmap='RdYlBu_r',
+        marker='s', s=40, alpha=0.9,
+        vmin=0, vmax=0.6,
+        edgecolors='black', linewidths=0.8
+    )
+
+    cbar = plt.colorbar(scatter_front, ax=ax2)
+    cbar.set_label('CytoTRACE2 Potency\n(Yüksek=Kök Hücre Benzeri)')
+
+    ax2.set_title(f'{test_sample}\nPotency Skorları + Bölgeler', fontsize=12, fontweight='bold')
+    ax2.invert_yaxis()
+    ax2.set_aspect('equal')
+    ax2.set_facecolor('lightgray')
+
+    # Legend
+    legend_elements = [
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
+               markeredgecolor='black', markersize=10, label='Front (■)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
+               markersize=10, label='Core (●)')
+    ]
+    ax2.legend(handles=legend_elements, loc='upper right')
+
+    plt.tight_layout()
+    plt.savefig(f"{OUTPUT_DIR}/test_{test_sample}_overlay.png", dpi=300, bbox_inches='tight')
+    plt.show()
+
+    print(f"\n✅ Kaydedildi: {OUTPUT_DIR}/test_{test_sample}_overlay.png")
+
+#===============================================================================
+# HÜCRE 4: TÜM HASTALAR İÇİN PANEL
+#===============================================================================
+
+print("\n" + "="*60)
+print("TÜM HASTALAR - POTENCY + FRONT/CORE")
+print("="*60)
+
+fig, axes = plt.subplots(2, 3, figsize=(20, 14))
+axes = axes.flatten()
+
+for idx, sample in enumerate(SAMPLES):
+    ax = axes[idx]
+
+    # Veri yükle
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+
+    if not os.path.exists(score_file) or 'coords' not in sample_files[sample]:
+        ax.text(0.5, 0.5, f"{sample}\nVeri eksik", ha='center', va='center', fontsize=14)
+        ax.set_facecolor('lightgray')
+        continue
+
+    df = pd.read_csv(score_file)
+
+    # Spot ID düzelt
+    if 'spot_id' not in df.columns:
+        for col in ['barcode', 'Unnamed: 0']:
+            if col in df.columns:
+                df = df.rename(columns={col: 'spot_id'})
+                break
+
+    # Skor sütunu bul
+    score_col = None
+    for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score']:
+        if col in df.columns:
+            score_col = col
+            break
+
+    # Koordinatları yükle
+    coords = pd.read_csv(sample_files[sample]['coords'], header=None)
+
+    if coords.shape[1] >= 6:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row', 'pxl_col'][:coords.shape[1]]
+    elif coords.shape[1] == 5:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row']
+        coords['pxl_col'] = coords['col'] * 100
+
+    coords = coords.rename(columns={'barcode': 'spot_id'})
+
+    # Birleştir
+    merged = df.merge(coords[['spot_id', 'pxl_row', 'pxl_col']], on='spot_id', how='left')
+    merged = merged.dropna(subset=['pxl_row', 'pxl_col'])
+
+    front = merged[merged['region'] == 'front']
+    core = merged[merged['region'] == 'core']
+
+    # Çiz
+    # Core (daire)
+    scatter_core = ax.scatter(
+        core['pxl_col'], core['pxl_row'],
+        c=core[score_col], cmap='RdYlBu_r',
+        marker='o', s=15, alpha=0.6,
+        vmin=0, vmax=0.6
+    )
+
+    # Front (kare, siyah kenarlı)
+    scatter_front = ax.scatter(
+        front['pxl_col'], front['pxl_row'],
+        c=front[score_col], cmap='RdYlBu_r',
+        marker='s', s=25, alpha=0.9,
+        vmin=0, vmax=0.6,
+        edgecolors='black', linewidths=0.5
+    )
+
+    # İstatistik
+    front_med = front[score_col].median() if len(front) > 0 else 0
+    core_med = core[score_col].median() if len(core) > 0 else 0
+
+    ax.set_title(f'{sample}\nFront: {front_med:.3f} | Core: {core_med:.3f}\n(n={len(front)}■ / {len(core)}●)',
+                 fontsize=11, fontweight='bold')
+    ax.invert_yaxis()
+    ax.set_aspect('equal')
+    ax.set_facecolor('#f0f0f0')
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+# Colorbar
+cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+sm = plt.cm.ScalarMappable(cmap='RdYlBu_r', norm=plt.Normalize(vmin=0, vmax=0.6))
+cbar = fig.colorbar(sm, cax=cbar_ax)
+cbar.set_label('CytoTRACE2 Potency Score', fontsize=12)
+
+# Ana başlık ve legend
+fig.suptitle('Spatial Potency Haritaları: Front (■ Kare) vs Core (● Daire)\nKırmızı = Yüksek Potency (Kök Hücre Benzeri)',
+             fontsize=14, fontweight='bold', y=1.02)
+
+plt.tight_layout(rect=[0, 0, 0.9, 1])
+plt.savefig(f"{OUTPUT_DIR}/all_samples_potency_frontcore.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+print(f"\n✅ Kaydedildi: {OUTPUT_DIR}/all_samples_potency_frontcore.png")
+
+#===============================================================================
+# HÜCRE 5: ÖZET İSTATİSTİK TABLOSU
+#===============================================================================
+
+print("\n" + "="*60)
+print("ÖZET İSTATİSTİKLER")
+print("="*60)
+
+print(f"\n{'Sample':<12} {'Front n':>8} {'Core n':>8} {'Front Med':>10} {'Core Med':>10} {'Δ':>8}")
+print("-"*60)
+
+for sample in SAMPLES:
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+
+    if not os.path.exists(score_file):
+        continue
+
+    df = pd.read_csv(score_file)
+
+    score_col = None
+    for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score']:
+        if col in df.columns:
+            score_col = col
+            break
+
+    front = df[df['region'] == 'front']
+    core = df[df['region'] == 'core']
+
+    front_med = front[score_col].median() if len(front) > 0 else 0
+    core_med = core[score_col].median() if len(core) > 0 else 0
+    delta = front_med - core_med
+
+    marker = "⬆️" if delta > 0 else "⬇️"
+    print(f"{sample:<12} {len(front):>8} {len(core):>8} {front_med:>10.3f} {core_med:>10.3f} {delta:>+7.3f} {marker}")
