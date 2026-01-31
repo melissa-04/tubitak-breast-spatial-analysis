@@ -1,0 +1,135 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+STEP18B: POTENCY KATEGORİLERİ ANALİZİ
+================================================================================
+Her hasta için potency kategorilerinin dağılımı (Front vs Core)
+================================================================================
+"""
+
+#===============================================================================
+# HÜCRE 1: KURULUM (Önceki notebook çalıştıysa atla)
+#===============================================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+
+BASE_DIR = "/content/drive/MyDrive/TÜBİTAK"
+OUTPUTS_DIR = f"{BASE_DIR}/outputs"
+CYTOTRACE2_RESULTS_DIR = f"{OUTPUTS_DIR}/STEP16_CANDIDATE_CYTOTRACE2/RESULTS"
+
+SAMPLES = ["1142243F", "1160920F", "CID4290", "CID4465", "CID4535", "CID44971"]
+
+print("✅ Hazır!")
+
+#===============================================================================
+# HÜCRE 2: POTENCY KATEGORİLERİNİ TANIMLA VE ANALİZ ET
+#===============================================================================
+
+# CytoTRACE2 potency sınıfları (makaleden)
+def assign_potency_category(score):
+    if pd.isna(score):
+        return "Unknown"
+    elif score < 0.25:
+        return "Differentiated"
+    elif score < 0.4:
+        return "Unipotent"
+    elif score < 0.55:
+        return "Oligopotent"
+    elif score < 0.7:
+        return "Multipotent"
+    else:
+        return "Pluripotent"
+
+print("="*70)
+print("POTENCY KATEGORİLERİ: FRONT vs CORE (Hasta Bazında)")
+print("="*70)
+
+all_results = []
+
+for sample in SAMPLES:
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+
+    if not os.path.exists(score_file):
+        print(f"\n⚠️ {sample}: Dosya bulunamadı")
+        continue
+
+    df = pd.read_csv(score_file)
+
+    # Skor sütununu bul
+    score_col = None
+    for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score']:
+        if col in df.columns:
+            score_col = col
+            break
+
+    if score_col is None:
+        print(f"\n⚠️ {sample}: Skor sütunu bulunamadı")
+        continue
+
+    # Kategori ata
+    df['potency_category'] = df[score_col].apply(assign_potency_category)
+
+    # Front ve Core filtrele
+    front = df[df['region'] == 'front']
+    core = df[df['region'] == 'core']
+
+    print(f"\n{'='*50}")
+    print(f"📊 {sample}")
+    print(f"{'='*50}")
+    print(f"   Front: {len(front)} spot | Core: {len(core)} spot")
+
+    # Kategori dağılımı
+    categories = ["Differentiated", "Unipotent", "Oligopotent", "Multipotent", "Pluripotent"]
+
+    print(f"\n   {'Kategori':<15} {'Front':>8} {'%':>6} {'Core':>8} {'%':>6}")
+    print(f"   {'-'*45}")
+
+    for cat in categories:
+        n_front = sum(front['potency_category'] == cat)
+        n_core = sum(core['potency_category'] == cat)
+        pct_front = (n_front / len(front) * 100) if len(front) > 0 else 0
+        pct_core = (n_core / len(core) * 100) if len(core) > 0 else 0
+
+        marker = "⬆️" if pct_front > pct_core else "⬇️" if pct_front < pct_core else "="
+        print(f"   {cat:<15} {n_front:>8} {pct_front:>5.1f}% {n_core:>8} {pct_core:>5.1f}% {marker}")
+
+        all_results.append({
+            'sample': sample,
+            'category': cat,
+            'n_front': n_front,
+            'pct_front': pct_front,
+            'n_core': n_core,
+            'pct_core': pct_core
+        })
+
+#===============================================================================
+# HÜCRE 3: POOLED ÖZET (TÜM HASTALAR BİRLİKTE)
+#===============================================================================
+
+print(f"\n{'='*70}")
+print("📊 POOLED ÖZET (Tüm Hastalar)")
+print(f"{'='*70}")
+
+results_df = pd.DataFrame(all_results)
+
+print(f"\n   {'Kategori':<15} {'Front %':>10} {'Core %':>10} {'Fark':>10}")
+print(f"   {'-'*50}")
+
+for cat in categories:
+    cat_data = results_df[results_df['category'] == cat]
+    avg_front = cat_data['pct_front'].mean()
+    avg_core = cat_data['pct_core'].mean()
+    diff = avg_front - avg_core
+
+    marker = "✅" if (cat in ["Multipotent", "Pluripotent"] and diff > 0) else ""
+    print(f"   {cat:<15} {avg_front:>9.1f}% {avg_core:>9.1f}% {diff:>+9.1f}% {marker}")
+
+# Kaydet
+results_df.to_csv(f"{OUTPUTS_DIR}/STEP18_MULTIPOTENCY/potency_categories_by_sample.csv", index=False)
+print(f"\n✅ Kaydedildi: STEP18_MULTIPOTENCY/potency_categories_by_sample.csv")
