@@ -1,0 +1,411 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+STEP18: MULTİPOTENCY GENLERİ KONTROLÜ (FADS1, FADS2, SCD)
+================================================================================
+CytoTRACE2 makalesinde multipotency ile ilişkilendirilen genlerin
+spatial transcriptomics verisinde varlığını ve ekspresyonunu kontrol edelim.
+
+Adım adım ilerleyeceğiz:
+1. Genlerin varlığını kontrol et
+2. Ekspresyon seviyelerini incele
+3. CytoTRACE2 skoru ile korelasyon
+4. Front vs Core karşılaştırması
+================================================================================
+"""
+
+#===============================================================================
+# HÜCRE 1: KURULUM VE DRIVE BAĞLANTISI
+#===============================================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+!pip install scanpy anndata --quiet
+
+import scanpy as sc
+import anndata as ad
+import pandas as pd
+import numpy as np
+import os
+from scipy.stats import spearmanr, mannwhitneyu
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import warnings
+warnings.filterwarnings('ignore')
+
+print("✅ Kurulum tamamlandı!")
+
+#===============================================================================
+# HÜCRE 2: DOSYA YOLLARINI TANIMLA
+#===============================================================================
+
+BASE_DIR = "/content/drive/MyDrive/TÜBİTAK"
+OUTPUTS_DIR = f"{BASE_DIR}/outputs"
+
+# CytoTRACE2 sonuçları (STEP16'dan)
+CYTOTRACE2_RESULTS_DIR = f"{OUTPUTS_DIR}/STEP16_CANDIDATE_CYTOTRACE2/RESULTS"
+
+# Spatial counts (gen ekspresyonları için)
+SPATIAL_COUNTS_DIR = f"{OUTPUTS_DIR}/STEP10_STEREOSCOPE_RUN/INPUTS"
+
+# Çıktı dizini
+OUTPUT_DIR = f"{OUTPUTS_DIR}/STEP18_MULTIPOTENCY"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 6 hasta
+SAMPLES = ["1142243F", "1160920F", "CID4290", "CID4465", "CID4535", "CID44971"]
+
+# Multipotency genleri (CytoTRACE2 makalesinden)
+# Not: Fare'de Scd2, insanda SCD (veya SCD1)
+MULTIPOTENCY_GENES = ["FADS1", "FADS2", "SCD"]
+
+print("✅ Yollar tanımlandı!")
+print(f"   Aranan genler: {MULTIPOTENCY_GENES}")
+
+#===============================================================================
+# HÜCRE 3: GENLERİN VERİDE VARLIĞINI KONTROL ET
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 1: GENLERİN VERİDE VARLIĞI")
+print("="*60)
+
+# İlk örneği yükle ve genleri kontrol et
+sample = SAMPLES[0]
+h5ad_path = f"{SPATIAL_COUNTS_DIR}/spatial_{sample}_counts_intersect.h5ad"
+
+print(f"\n📂 Test dosyası: {sample}")
+adata = sc.read_h5ad(h5ad_path)
+
+print(f"   Toplam gen sayısı: {adata.n_vars}")
+print(f"   Toplam spot sayısı: {adata.n_obs}")
+
+# Genleri kontrol et
+print(f"\n🔍 Multipotency genleri kontrolü:")
+gene_status = {}
+for gene in MULTIPOTENCY_GENES:
+    if gene in adata.var_names:
+        gene_status[gene] = "✅ BULUNDU"
+    else:
+        gene_status[gene] = "❌ BULUNAMADI"
+    print(f"   {gene}: {gene_status[gene]}")
+
+# Alternatif gen isimleri kontrol et
+print(f"\n🔍 Alternatif isimler kontrolü:")
+alternatives = ["SCD1", "SCD2", "FADS3", "ELOVL", "ELOVL6"]
+for gene in alternatives:
+    status = "✅" if gene in adata.var_names else "❌"
+    print(f"   {gene}: {status}")
+
+#===============================================================================
+# HÜCRE 4: BULUNAN GENLERİN EKSPRESYON SEVİYELERİ
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 2: EKSPRESYON SEVİYELERİ")
+print("="*60)
+
+# Bulunan genleri filtrele
+found_genes = [g for g in MULTIPOTENCY_GENES if g in adata.var_names]
+
+if len(found_genes) == 0:
+    print("❌ Hiçbir multipotency geni bulunamadı!")
+    print("   Analiz devam edemez.")
+else:
+    print(f"\n✅ Bulunan genler: {found_genes}")
+
+    # Ham counts'tan ekspresyon istatistikleri
+    for gene in found_genes:
+        gene_idx = adata.var_names.get_loc(gene)
+        counts = adata.X[:, gene_idx].toarray().flatten() if hasattr(adata.X, 'toarray') else adata.X[:, gene_idx].flatten()
+
+        n_expressed = np.sum(counts > 0)
+        pct_expressed = (n_expressed / len(counts)) * 100
+        mean_expr = np.mean(counts)
+        max_expr = np.max(counts)
+
+        print(f"\n   📊 {gene}:")
+        print(f"      Eksprese eden spot: {n_expressed}/{len(counts)} ({pct_expressed:.1f}%)")
+        print(f"      Ortalama count: {mean_expr:.2f}")
+        print(f"      Maksimum count: {max_expr:.0f}")
+
+        if pct_expressed < 5:
+            print(f"      ⚠️ UYARI: Çok düşük ekspresyon (<5%), analiz güvenilir olmayabilir")
+        elif pct_expressed < 20:
+            print(f"      ⚡ DİKKAT: Düşük ekspresyon, dikkatli yorumla")
+        else:
+            print(f"      ✅ Yeterli ekspresyon seviyesi")
+
+#===============================================================================
+# HÜCRE 5: TÜM ÖRNEKLERDE EKSPRESYON KONTROLÜ
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 3: TÜM ÖRNEKLERDE EKSPRESYON")
+print("="*60)
+
+expression_summary = []
+
+for sample in SAMPLES:
+    h5ad_path = f"{SPATIAL_COUNTS_DIR}/spatial_{sample}_counts_intersect.h5ad"
+    adata = sc.read_h5ad(h5ad_path)
+
+    row = {'sample': sample, 'n_spots': adata.n_obs}
+
+    for gene in found_genes:
+        if gene in adata.var_names:
+            gene_idx = adata.var_names.get_loc(gene)
+            counts = adata.X[:, gene_idx].toarray().flatten() if hasattr(adata.X, 'toarray') else adata.X[:, gene_idx].flatten()
+
+            n_expressed = np.sum(counts > 0)
+            pct_expressed = (n_expressed / len(counts)) * 100
+            mean_expr = np.mean(counts)
+
+            row[f'{gene}_pct'] = pct_expressed
+            row[f'{gene}_mean'] = mean_expr
+        else:
+            row[f'{gene}_pct'] = 0
+            row[f'{gene}_mean'] = 0
+
+    expression_summary.append(row)
+
+expr_df = pd.DataFrame(expression_summary)
+print("\n📋 Tüm örneklerde ekspresyon oranları (%):")
+print(expr_df.to_string(index=False))
+
+# Ortalama ekspresyon
+print("\n📊 Ortalama ekspresyon oranları:")
+for gene in found_genes:
+    avg_pct = expr_df[f'{gene}_pct'].mean()
+    print(f"   {gene}: {avg_pct:.1f}%")
+
+#===============================================================================
+# HÜCRE 6: CYTOTRACE2 SKORLARI İLE BİRLEŞTİRME
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 4: CYTOTRACE2 İLE BİRLEŞTİRME")
+print("="*60)
+
+all_data = []
+
+for sample in SAMPLES:
+    print(f"\n📂 {sample} işleniyor...")
+
+    # CytoTRACE2 skorlarını yükle
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+
+    if not os.path.exists(score_file):
+        print(f"   ⚠️ Skor dosyası bulunamadı, atlanıyor")
+        continue
+
+    scores_df = pd.read_csv(score_file)
+
+    # Spot ID sütununu düzelt
+    if 'spot_id' not in scores_df.columns:
+        if 'barcode' in scores_df.columns:
+            scores_df = scores_df.rename(columns={'barcode': 'spot_id'})
+        elif 'Unnamed: 0' in scores_df.columns:
+            scores_df = scores_df.rename(columns={'Unnamed: 0': 'spot_id'})
+
+    # Spatial counts yükle
+    h5ad_path = f"{SPATIAL_COUNTS_DIR}/spatial_{sample}_counts_intersect.h5ad"
+    adata = sc.read_h5ad(h5ad_path)
+
+    # Normalize et (log2 CPM)
+    sc.pp.normalize_total(adata, target_sum=1e6)
+    sc.pp.log1p(adata, base=2)
+
+    # Gen ekspresyonlarını DataFrame'e çevir
+    expr_data = {}
+    for gene in found_genes:
+        if gene in adata.var_names:
+            gene_idx = adata.var_names.get_loc(gene)
+            expr = adata.X[:, gene_idx].toarray().flatten() if hasattr(adata.X, 'toarray') else adata.X[:, gene_idx].flatten()
+            expr_data[gene] = expr
+
+    expr_df = pd.DataFrame(expr_data, index=adata.obs_names)
+    expr_df = expr_df.reset_index().rename(columns={'index': 'spot_id'})
+
+    # Birleştir
+    scores_filtered = scores_df[scores_df['region'].isin(['front', 'core'])].copy()
+    merged = scores_filtered.merge(expr_df, on='spot_id', how='inner')
+    merged['sample'] = sample
+
+    all_data.append(merged)
+    print(f"   ✅ {len(merged)} spot birleştirildi")
+
+# Tüm verileri birleştir
+pooled = pd.concat(all_data, ignore_index=True)
+print(f"\n✅ Toplam: {len(pooled)} spot")
+print(f"   Front: {sum(pooled['region']=='front')}")
+print(f"   Core: {sum(pooled['region']=='core')}")
+
+#===============================================================================
+# HÜCRE 7: CYTOTRACE2 İLE KORELASYON ANALİZİ
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 5: CYTOTRACE2 İLE KORELASYON")
+print("="*60)
+
+# CytoTRACE2 skor sütununu bul
+cytotrace_col = None
+for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score', 'score']:
+    if col in pooled.columns:
+        cytotrace_col = col
+        break
+
+if cytotrace_col is None:
+    print("❌ CytoTRACE2 skor sütunu bulunamadı!")
+else:
+    print(f"   CytoTRACE2 sütunu: {cytotrace_col}")
+
+    print("\n📊 Spearman Korelasyonları (CytoTRACE2 vs Multipotency Genleri):")
+    print("-"*50)
+
+    corr_results = []
+    for gene in found_genes:
+        if gene in pooled.columns:
+            valid = pooled[[cytotrace_col, gene]].dropna()
+            r, p = spearmanr(valid[cytotrace_col], valid[gene])
+
+            corr_results.append({
+                'gene': gene,
+                'spearman_r': r,
+                'p_value': p,
+                'n': len(valid)
+            })
+
+            sig = "✅" if p < 0.05 else "❌"
+            direction = "↑" if r > 0 else "↓"
+            print(f"   {gene}: r = {r:+.3f} {direction}  p = {p:.2e}  {sig}")
+
+    corr_df = pd.DataFrame(corr_results)
+
+#===============================================================================
+# HÜCRE 8: FRONT vs CORE KARŞILAŞTIRMASI
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 6: FRONT vs CORE KARŞILAŞTIRMASI")
+print("="*60)
+
+comparison_results = []
+
+for gene in found_genes:
+    if gene in pooled.columns:
+        front_vals = pooled[pooled['region'] == 'front'][gene].dropna()
+        core_vals = pooled[pooled['region'] == 'core'][gene].dropna()
+
+        stat, p = mannwhitneyu(front_vals, core_vals, alternative='two-sided')
+
+        result = {
+            'gene': gene,
+            'front_median': front_vals.median(),
+            'core_median': core_vals.median(),
+            'delta': front_vals.median() - core_vals.median(),
+            'p_value': p,
+            'n_front': len(front_vals),
+            'n_core': len(core_vals)
+        }
+        comparison_results.append(result)
+
+        sig = "✅" if p < 0.05 else "❌"
+        direction = "Front > Core" if result['delta'] > 0 else "Core > Front"
+        print(f"\n   📊 {gene}:")
+        print(f"      Front median: {result['front_median']:.3f}")
+        print(f"      Core median:  {result['core_median']:.3f}")
+        print(f"      Δ = {result['delta']:+.3f} ({direction})")
+        print(f"      p = {p:.2e} {sig}")
+
+comp_df = pd.DataFrame(comparison_results)
+
+#===============================================================================
+# HÜCRE 9: GÖRSELLEŞTİRME
+#===============================================================================
+
+print("\n" + "="*60)
+print("ADIM 7: GÖRSELLEŞTİRME")
+print("="*60)
+
+n_genes = len(found_genes)
+
+if n_genes > 0 and cytotrace_col:
+    fig, axes = plt.subplots(2, n_genes, figsize=(5*n_genes, 10))
+
+    if n_genes == 1:
+        axes = axes.reshape(2, 1)
+
+    for i, gene in enumerate(found_genes):
+        # Üst satır: CytoTRACE2 vs Gen scatter
+        ax1 = axes[0, i]
+        colors = pooled['region'].map({'front': 'red', 'core': 'blue'})
+        ax1.scatter(pooled[cytotrace_col], pooled[gene], c=colors, alpha=0.3, s=10)
+
+        r, p = spearmanr(pooled[cytotrace_col].dropna(), pooled[gene].dropna())
+        ax1.set_xlabel('CytoTRACE2 Potency')
+        ax1.set_ylabel(f'{gene} Expression (log2 CPM)')
+        ax1.set_title(f'{gene} vs CytoTRACE2\nr={r:.3f}, p={p:.2e}')
+
+        # Alt satır: Front vs Core boxplot
+        ax2 = axes[1, i]
+        plot_data = pooled[['region', gene]].dropna()
+        sns.boxplot(data=plot_data, x='region', y=gene, ax=ax2, palette={'front': 'red', 'core': 'blue'})
+        ax2.set_xlabel('Region')
+        ax2.set_ylabel(f'{gene} Expression')
+
+        p_val = comp_df[comp_df['gene']==gene]['p_value'].values[0]
+        ax2.set_title(f'{gene}: Front vs Core\np={p_val:.2e}')
+
+    plt.tight_layout()
+    plt.savefig(f"{OUTPUT_DIR}/multipotency_genes_analysis.png", dpi=300, bbox_inches='tight')
+    plt.show()
+
+    print(f"\n✅ Figür kaydedildi: {OUTPUT_DIR}/multipotency_genes_analysis.png")
+
+#===============================================================================
+# HÜCRE 10: ÖZET VE SONUÇ
+#===============================================================================
+
+print("\n" + "="*60)
+print("ÖZET SONUÇLAR")
+print("="*60)
+
+print("\n📋 Multipotency Genleri Durumu:")
+print("-"*50)
+
+for gene in MULTIPOTENCY_GENES:
+    if gene in found_genes:
+        avg_pct = np.mean([row[f'{gene}_pct'] for row in expression_summary if f'{gene}_pct' in row])
+
+        if gene in corr_df['gene'].values:
+            r = corr_df[corr_df['gene']==gene]['spearman_r'].values[0]
+            p_corr = corr_df[corr_df['gene']==gene]['p_value'].values[0]
+        else:
+            r, p_corr = 0, 1
+
+        if gene in comp_df['gene'].values:
+            delta = comp_df[comp_df['gene']==gene]['delta'].values[0]
+            p_comp = comp_df[comp_df['gene']==gene]['p_value'].values[0]
+        else:
+            delta, p_comp = 0, 1
+
+        print(f"\n   {gene}:")
+        print(f"      Ekspresyon: {avg_pct:.1f}% spotlarda")
+        print(f"      CytoTRACE2 korelasyon: r={r:+.3f} (p={p_corr:.2e})")
+        print(f"      Front vs Core: Δ={delta:+.3f} (p={p_comp:.2e})")
+    else:
+        print(f"\n   {gene}: ❌ Veride bulunamadı")
+
+# Sonuçları kaydet
+if len(found_genes) > 0:
+    corr_df.to_csv(f"{OUTPUT_DIR}/multipotency_cytotrace2_correlation.csv", index=False)
+    comp_df.to_csv(f"{OUTPUT_DIR}/multipotency_front_vs_core.csv", index=False)
+    print(f"\n✅ Sonuçlar kaydedildi: {OUTPUT_DIR}/")
+
+print("\n" + "="*60)
+print("ANALİZ TAMAMLANDI!")
+print("="*60)
