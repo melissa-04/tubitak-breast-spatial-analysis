@@ -1,0 +1,248 @@
+"""
+================================================================================
+STEP18D: CYTOTRACE2 POTENCY SKORLARI SPATIAL HARİTA
+================================================================================
+Her hasta için potency skorlarını renk skalasıyla göster
++ Front/Core sınırlarını işaretle
+================================================================================
+"""
+
+#===============================================================================
+# HÜCRE 1: KURULUM
+#===============================================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.patches as mpatches
+
+BASE_DIR = "/content/drive/MyDrive/TÜBİTAK"
+OUTPUTS_DIR = f"{BASE_DIR}/outputs"
+EXTRACTED_DIR = f"{BASE_DIR}/extracted"
+CYTOTRACE2_RESULTS_DIR = f"{OUTPUTS_DIR}/STEP16_CANDIDATE_CYTOTRACE2/RESULTS"
+SPATIAL_DIR = f"{EXTRACTED_DIR}/spatial"
+
+SAMPLES = ["1142243F", "1160920F", "CID4290", "CID4465", "CID4535", "CID44971"]
+
+OUTPUT_DIR = f"{OUTPUTS_DIR}/STEP18_MULTIPOTENCY/SPATIAL_MAPS"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print("✅ Hazır!")
+
+#===============================================================================
+# HÜCRE 2: KOORDİNAT DOSYALARINI BUL
+#===============================================================================
+
+def find_coord_file(sample):
+    for root, dirs, files in os.walk(EXTRACTED_DIR):
+        for f in files:
+            if 'tissue_positions' in f and sample in root:
+                return os.path.join(root, f)
+    return None
+
+coord_files = {}
+for sample in SAMPLES:
+    coord_file = find_coord_file(sample)
+    if coord_file:
+        coord_files[sample] = coord_file
+        print(f"   ✅ {sample}")
+
+#===============================================================================
+# HÜCRE 3: POTENCY SKORLARI HARİTASI (6 HASTA)
+#===============================================================================
+
+print("\n" + "="*60)
+print("CYTOTRACE2 POTENCY SPATIAL HARİTALARI")
+print("="*60)
+
+fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+axes = axes.flatten()
+
+# Renk skalası: Düşük (mavi) -> Yüksek (kırmızı)
+cmap = plt.cm.RdYlBu_r  # Kırmızı = yüksek potency
+
+for idx, sample in enumerate(SAMPLES):
+    ax = axes[idx]
+
+    # 1. Veri yükle
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+
+    if not os.path.exists(score_file):
+        ax.text(0.5, 0.5, f"{sample}\nVeri yok", ha='center', va='center')
+        continue
+
+    df = pd.read_csv(score_file)
+
+    # Spot ID düzelt
+    if 'spot_id' not in df.columns:
+        if 'barcode' in df.columns:
+            df = df.rename(columns={'barcode': 'spot_id'})
+        elif 'Unnamed: 0' in df.columns:
+            df = df.rename(columns={'Unnamed: 0': 'spot_id'})
+
+    # Skor sütunu bul
+    score_col = None
+    for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score']:
+        if col in df.columns:
+            score_col = col
+            break
+
+    if score_col is None:
+        ax.text(0.5, 0.5, f"{sample}\nSkor yok", ha='center', va='center')
+        continue
+
+    # 2. Koordinat yükle
+    if sample not in coord_files:
+        ax.text(0.5, 0.5, f"{sample}\nKoordinat yok", ha='center', va='center')
+        continue
+
+    coords = pd.read_csv(coord_files[sample], header=None)
+
+    if coords.shape[1] >= 6:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row', 'pxl_col'][:coords.shape[1]]
+    else:
+        coords.columns = ['barcode'] + [f'col_{i}' for i in range(coords.shape[1]-1)]
+        coords['pxl_row'] = coords.iloc[:, 3] if coords.shape[1] > 3 else coords.iloc[:, 1]
+        coords['pxl_col'] = coords.iloc[:, 4] if coords.shape[1] > 4 else coords.iloc[:, 2]
+
+    coords = coords.rename(columns={'barcode': 'spot_id'})
+
+    # 3. Birleştir
+    merged = df.merge(coords[['spot_id', 'pxl_row', 'pxl_col']], on='spot_id', how='left')
+    merged = merged.dropna(subset=['pxl_row', 'pxl_col', score_col])
+
+    # 4. Front ve Core ayır
+    front = merged[merged['region'] == 'front']
+    core = merged[merged['region'] == 'core']
+
+    # 5. Core spotları çiz (potency skoruna göre renkli)
+    scatter_core = ax.scatter(
+        core['pxl_col'], core['pxl_row'],
+        c=core[score_col], cmap=cmap,
+        s=20, alpha=0.7,
+        vmin=0, vmax=0.7,
+        edgecolors='none'
+    )
+
+    # 6. Front spotları çiz (potency skoruna göre renkli + siyah kenar)
+    scatter_front = ax.scatter(
+        front['pxl_col'], front['pxl_row'],
+        c=front[score_col], cmap=cmap,
+        s=25, alpha=0.9,
+        vmin=0, vmax=0.7,
+        edgecolors='black', linewidths=0.5
+    )
+
+    # İstatistikler
+    front_median = front[score_col].median()
+    core_median = core[score_col].median()
+
+    ax.set_title(f'{sample}\nFront median: {front_median:.3f} | Core median: {core_median:.3f}',
+                 fontsize=11, fontweight='bold')
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.invert_yaxis()
+    ax.set_aspect('equal')
+
+    print(f"   ✅ {sample}: Front={len(front)}, Core={len(core)}")
+
+# Colorbar ekle
+cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+cbar = fig.colorbar(scatter_core, cax=cbar_ax)
+cbar.set_label('CytoTRACE2 Potency Score\n(Yüksek = Daha Kök Hücre Benzeri)', fontsize=10)
+
+# Legend
+legend_elements = [
+    mpatches.Patch(facecolor='white', edgecolor='black', linewidth=1.5, label='Front (siyah kenarlı)'),
+    mpatches.Patch(facecolor='white', edgecolor='none', label='Core (kenarsız)')
+]
+fig.legend(handles=legend_elements, loc='lower center', ncol=2, fontsize=10,
+           bbox_to_anchor=(0.5, 0.02))
+
+plt.suptitle('CytoTRACE2 Potency Skorları - Spatial Dağılım\n(Kırmızı = Yüksek Potency, Mavi = Düşük Potency)',
+             fontsize=14, fontweight='bold', y=1.02)
+
+plt.tight_layout(rect=[0, 0.05, 0.9, 1])
+plt.savefig(f"{OUTPUT_DIR}/cytotrace2_potency_spatial_maps.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+print(f"\n✅ Kaydedildi: {OUTPUT_DIR}/cytotrace2_potency_spatial_maps.png")
+
+#===============================================================================
+# HÜCRE 4: FRONT vs CORE YAN YANA KARŞILAŞTIRMA (TEK HASTA DETAY)
+#===============================================================================
+
+print("\n" + "="*60)
+print("DETAYLI GÖRÜNÜM: 1 HASTA ÖRNEĞİ")
+print("="*60)
+
+# En çok front spotu olan hastayı seç
+sample = "1142243F"  # veya istediğin hastayı değiştir
+
+score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+df = pd.read_csv(score_file)
+
+if 'spot_id' not in df.columns:
+    if 'barcode' in df.columns:
+        df = df.rename(columns={'barcode': 'spot_id'})
+    elif 'Unnamed: 0' in df.columns:
+        df = df.rename(columns={'Unnamed: 0': 'spot_id'})
+
+score_col = None
+for col in ['cytotrace2_potency_score', 'potency_score', 'CytoTRACE2_Score']:
+    if col in df.columns:
+        score_col = col
+        break
+
+coords = pd.read_csv(coord_files[sample], header=None)
+if coords.shape[1] >= 6:
+    coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row', 'pxl_col'][:coords.shape[1]]
+coords = coords.rename(columns={'barcode': 'spot_id'})
+
+merged = df.merge(coords[['spot_id', 'pxl_row', 'pxl_col']], on='spot_id', how='left')
+merged = merged.dropna(subset=['pxl_row', 'pxl_col', score_col])
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+# Sol: Sadece bölgeler (Front=kırmızı, Core=mavi)
+ax1 = axes[0]
+front = merged[merged['region'] == 'front']
+core = merged[merged['region'] == 'core']
+ax1.scatter(core['pxl_col'], core['pxl_row'], c='blue', s=15, alpha=0.6, label=f'Core (n={len(core)})')
+ax1.scatter(front['pxl_col'], front['pxl_row'], c='red', s=15, alpha=0.8, label=f'Front (n={len(front)})')
+ax1.set_title(f'{sample}\nBölge Tanımı', fontsize=12, fontweight='bold')
+ax1.legend()
+ax1.invert_yaxis()
+ax1.set_aspect('equal')
+
+# Orta: Potency skorları
+ax2 = axes[1]
+scatter = ax2.scatter(
+    merged['pxl_col'], merged['pxl_row'],
+    c=merged[score_col], cmap='RdYlBu_r',
+    s=15, alpha=0.8, vmin=0, vmax=0.7
+)
+plt.colorbar(scatter, ax=ax2, label='Potency Score')
+ax2.set_title(f'{sample}\nCytoTRACE2 Potency', fontsize=12, fontweight='bold')
+ax2.invert_yaxis()
+ax2.set_aspect('equal')
+
+# Sağ: Front vs Core boxplot
+ax3 = axes[2]
+import seaborn as sns
+plot_data = merged[['region', score_col]].copy()
+plot_data = plot_data[plot_data['region'].isin(['front', 'core'])]
+sns.boxplot(data=plot_data, x='region', y=score_col, palette={'front': 'red', 'core': 'blue'}, ax=ax3)
+ax3.set_title(f'{sample}\nFront vs Core Karşılaştırma', fontsize=12, fontweight='bold')
+ax3.set_ylabel('CytoTRACE2 Potency Score')
+
+plt.tight_layout()
+plt.savefig(f"{OUTPUT_DIR}/detailed_view_{sample}.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+print(f"\n✅ Kaydedildi: {OUTPUT_DIR}/detailed_view_{sample}.png")
