@@ -1,0 +1,197 @@
+"""
+================================================================================
+STEP18C: FRONT vs CORE SPATIAL GÖRSELLEŞTİRME
+================================================================================
+Her hasta için Front (kırmızı) ve Core (mavi) spotlarını harita üzerinde göster
+================================================================================
+"""
+
+#===============================================================================
+# HÜCRE 1: KURULUM
+#===============================================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+
+BASE_DIR = "/content/drive/MyDrive/TÜBİTAK"
+OUTPUTS_DIR = f"{BASE_DIR}/outputs"
+EXTRACTED_DIR = f"{BASE_DIR}/extracted"
+
+# CytoTRACE2 sonuçları (front/core etiketi burada)
+CYTOTRACE2_RESULTS_DIR = f"{OUTPUTS_DIR}/STEP16_CANDIDATE_CYTOTRACE2/RESULTS"
+
+# Spatial koordinatlar
+SPATIAL_DIR = f"{EXTRACTED_DIR}/spatial"
+
+SAMPLES = ["1142243F", "1160920F", "CID4290", "CID4465", "CID4535", "CID44971"]
+
+# Çıktı
+OUTPUT_DIR = f"{OUTPUTS_DIR}/STEP18_MULTIPOTENCY/SPATIAL_MAPS"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print("✅ Hazır!")
+
+#===============================================================================
+# HÜCRE 2: KOORDİNAT DOSYALARINI BUL
+#===============================================================================
+
+print("\n🔍 Koordinat dosyaları aranıyor...")
+
+def find_coord_file(sample):
+    """Örnek için koordinat dosyasını bul"""
+    possible_paths = [
+        f"{SPATIAL_DIR}/{sample}/tissue_positions_list.csv",
+        f"{SPATIAL_DIR}/{sample}/tissue_positions.csv",
+        f"{EXTRACTED_DIR}/spatial/{sample}/tissue_positions_list.csv",
+        f"{BASE_DIR}/extracted/spatial/{sample}/tissue_positions_list.csv",
+    ]
+
+    # Recursive arama
+    for root, dirs, files in os.walk(EXTRACTED_DIR):
+        for f in files:
+            if 'tissue_positions' in f and sample in root:
+                possible_paths.append(os.path.join(root, f))
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+    return None
+
+coord_files = {}
+for sample in SAMPLES:
+    coord_file = find_coord_file(sample)
+    if coord_file:
+        coord_files[sample] = coord_file
+        print(f"   ✅ {sample}: {coord_file.split('/')[-1]}")
+    else:
+        print(f"   ❌ {sample}: Koordinat dosyası bulunamadı")
+
+#===============================================================================
+# HÜCRE 3: HER HASTA İÇİN FRONT/CORE HARİTASI ÇİZ
+#===============================================================================
+
+print("\n" + "="*60)
+print("SPATIAL HARİTALAR")
+print("="*60)
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+axes = axes.flatten()
+
+for idx, sample in enumerate(SAMPLES):
+    ax = axes[idx]
+
+    # 1. Front/Core etiketli verileri yükle
+    score_file = f"{CYTOTRACE2_RESULTS_DIR}/{sample}/candidate_front_core_scored_{sample}.csv"
+
+    if not os.path.exists(score_file):
+        ax.text(0.5, 0.5, f"{sample}\nVeri yok", ha='center', va='center')
+        ax.set_title(sample)
+        continue
+
+    df = pd.read_csv(score_file)
+
+    # Spot ID sütununu düzelt
+    if 'spot_id' not in df.columns:
+        if 'barcode' in df.columns:
+            df = df.rename(columns={'barcode': 'spot_id'})
+        elif 'Unnamed: 0' in df.columns:
+            df = df.rename(columns={'Unnamed: 0': 'spot_id'})
+
+    # 2. Koordinatları yükle
+    if sample not in coord_files:
+        ax.text(0.5, 0.5, f"{sample}\nKoordinat yok", ha='center', va='center')
+        ax.set_title(sample)
+        continue
+
+    coords = pd.read_csv(coord_files[sample], header=None)
+
+    # Koordinat formatını belirle
+    if coords.shape[1] == 6:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row', 'pxl_col']
+    elif coords.shape[1] == 5:
+        coords.columns = ['barcode', 'in_tissue', 'row', 'col', 'pxl_row']
+        coords['pxl_col'] = coords['col'] * 100
+    else:
+        coords.columns = ['barcode'] + [f'col_{i}' for i in range(coords.shape[1]-1)]
+        coords['pxl_row'] = coords.iloc[:, -2] if coords.shape[1] > 2 else 0
+        coords['pxl_col'] = coords.iloc[:, -1] if coords.shape[1] > 1 else 0
+
+    coords = coords.rename(columns={'barcode': 'spot_id'})
+
+    # 3. Birleştir
+    merged = df.merge(coords[['spot_id', 'pxl_row', 'pxl_col']], on='spot_id', how='left')
+
+    # Koordinatı olmayanları çıkar
+    merged = merged.dropna(subset=['pxl_row', 'pxl_col'])
+
+    # 4. Front ve Core ayır
+    front = merged[merged['region'] == 'front']
+    core = merged[merged['region'] == 'core']
+
+    # 5. Çiz
+    ax.scatter(core['pxl_col'], core['pxl_row'], c='blue', s=15, alpha=0.6, label=f'Core (n={len(core)})')
+    ax.scatter(front['pxl_col'], front['pxl_row'], c='red', s=15, alpha=0.8, label=f'Front (n={len(front)})')
+
+    ax.set_title(f'{sample}', fontsize=12, fontweight='bold')
+    ax.legend(loc='upper right', fontsize=8)
+    ax.set_xlabel('X koordinat')
+    ax.set_ylabel('Y koordinat')
+    ax.invert_yaxis()  # H&E görüntüsüyle uyumlu olması için
+    ax.set_aspect('equal')
+
+    print(f"   ✅ {sample}: Front={len(front)}, Core={len(core)}")
+
+plt.suptitle('FRONT (Kırmızı) vs CORE (Mavi) Spatial Dağılımı', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f"{OUTPUT_DIR}/front_vs_core_spatial_maps.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+print(f"\n✅ Kaydedildi: {OUTPUT_DIR}/front_vs_core_spatial_maps.png")
+
+#===============================================================================
+# HÜCRE 4: FRONT/CORE TANIM AÇIKLAMASI
+#===============================================================================
+
+print("\n" + "="*60)
+print("📖 FRONT vs CORE NASIL TANIMLANDI?")
+print("="*60)
+
+print("""
+KULLANILAN YÖNTEM: Patoloji Anotasyonu + Komşuluk Analizi
+
+1️⃣ ADIM: Patoloji Anotasyonları (Wu et al. 2021'den)
+   Her spot için patolojist tarafından etiketlendi:
+   - Invasive cancer
+   - Stroma
+   - Adipose tissue
+   - Normal ductal
+   - DCIS (Ductal carcinoma in situ)
+   - Lymphocyte aggregates
+
+2️⃣ ADIM: Komşuluk Analizi
+   Her "Invasive cancer" etiketi spot için:
+   - 6 komşu spot belirlendi (Visium hexagonal grid)
+   - Komşuların etiketleri kontrol edildi
+
+3️⃣ ADIM: Front vs Core Sınıflandırması
+
+   🔴 FRONT (İnvaziv Cephe):
+   - Spot etiketi = "Invasive cancer"
+   - VE en az 1 komşusu = Stroma/Adipöz/Normal/DCIS
+   - Yani: Tümör-stroma SINIRINDA olan spotlar
+
+   🔵 CORE (Tümör Merkezi):
+   - Spot etiketi = "Invasive cancer"
+   - VE TÜM komşuları = "Invasive cancer"
+   - Yani: Tamamen tümör içinde kalan spotlar
+
+4️⃣ NEDEN BU YÖNTEM?
+   ✅ Geometrik (kenar-merkez mesafesi) değil, BİYOLOJİK tanım
+   ✅ Wu et al. 2021 patoloji anotasyonlarıyla uyumlu
+   ✅ Gerçek invazyon cephesini yakalıyor
+""")
