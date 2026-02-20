@@ -1,25 +1,27 @@
-Spatial Transcriptomics Analysis of Breast Cancer
-TÜBİTAK 2209-A Research Project
-Project Overview
+## Spatial Transcriptomics Analysis of Breast Cancer
+## TÜBİTAK 2209-A Research Project
+## Project Overview
 
-This project investigates cancer stem cell (CSC) potential in breast cancer using spatial transcriptomics data.
++This project investigates cancer stem cell (CSC) potential in breast cancer using spatial transcriptomics data.
 
-The main objective is to determine whether the invasive front of the tumor shows different stemness potential compared to the tumor core.
++The main objective is to determine whether the invasive front of the tumor shows different stemness potential compared to the tumor core.
 
-To estimate stemness, I used CytoTRACE2, which predicts differentiation potential based on gene expression diversity.
++To estimate stemness, I used CytoTRACE2, which predicts differentiation potential based on gene expression diversity.
 
-Research Hypothesis
 
-Cancer progression and metastasis are often driven by stem-like tumor cells.
+## Research Hypothesis :   Cancer progression and metastasis are often driven by stem-like tumor cells.
 
-The hypothesis of this project is:
+
+##The hypothesis of this project is:
 
 The invasive front of breast tumors has higher cancer stem cell potential than the tumor core.
 
 To test this hypothesis, I built a systematic spatial analysis pipeline including quality control, deconvolution, cancer-rich filtering, and potency scoring.
 
-Dataset Description
-Spatial Transcriptomics Data
+## Dataset Description
+
+
+**Spatial Transcriptomics Data**
 
 Platform: 10x Genomics Visium
 
@@ -31,7 +33,7 @@ Total patients: 6
 
 Each patient analyzed independently
 
-scRNA-seq Reference Dataset
+**scRNA-seq Reference Dataset**
 
 GEO accession: GSE176078
 
@@ -39,11 +41,15 @@ Used as reference for cell type deconvolution
 
 9 major cell types (based on celltype_major annotation)
 
-Analysis Workflow
+
+
+
+
+## Analysis Workflow
 
 The analysis was performed step by step to avoid technical bias and ensure biological relevance.
 
-1. File Validation and Data Integrity
+**1. File Validation and Data Integrit**
 
 All downloaded files were manually checked.
 
@@ -53,7 +59,9 @@ Some files had incorrect .gz extensions and were fixed.
 
 All samples were successfully loaded after correction.
 
-2. Quality Control (QC)
+
+
+**2. Quality Control (QC)**
 
 For each patient, the following metrics were calculated:
 
@@ -75,7 +83,9 @@ Removal of high mitochondrial spots
 
 This ensured removal of low-quality and extreme outlier spots.
 
-3. Spatial Validation
+
+
+**3. Spatial Validation**
 
 Spot coordinates were overlaid on H&E images.
 
@@ -99,7 +109,8 @@ Control set: in-tissue only
 
 Cleaned .h5ad files were saved for each patient.
 
-4. Normalization
+
+**4. Normalization**
 
 For each patient:
 
@@ -111,7 +122,9 @@ Log2 transformation was generated for visualization.
 
 Raw counts were kept for count-based downstream analysis.
 
-5. Stereoscope Deconvolution
+
+
+**5. Stereoscope Deconvolution**
 
 Because Visium spots contain mixed cell populations, direct stemness scoring would be confounded by cell composition.
 
@@ -143,7 +156,10 @@ Strict set: Top 10% within each patient
 
 An adaptive threshold was used because fixed high thresholds removed too many spots due to the mixed-cell nature of Visium.
 
-7. CytoTRACE2 Analysis
+
+
+
+**7. CytoTRACE2 Analysis**
 
 CytoTRACE2 was applied to:
 
@@ -167,7 +183,9 @@ Visualized on tissue coordinates
 
 Spatial patterns showed non-random clustering.
 
-8. Invasive Front Definition
+
+
+**8. Invasive Front Definition**
 
 Instead of using geometric distance, pathology annotations were used.
 
@@ -179,7 +197,10 @@ Core: invasive spot surrounded only by invasive spots
 
 This definition is biologically more meaningful than simple center–edge distance.
 
-9. Statistical Analysis
+
+
+
+**9. Statistical Analysis**
 
 For each patient:
 
@@ -205,49 +226,12 @@ However, pooled analysis across all patients showed:
 
 Invasive front had significantly higher CytoTRACE2 scores
 
-p = 0.0032
+**p = 0.0032**
 
 This supports the hypothesis that invasive regions may contain more stem-like tumor cells.
 
-Interpretation
-
-The results suggest:
-
-CSC potential is spatially structured
-
-The invasive front may represent a stem-like niche
-
-Breast cancer shows strong inter-patient heterogeneity
-
-Differences between patients may reflect:
-
-Molecular subtype differences
-
-Microenvironment variation
-
-Tumor architecture diversity
-
-Limitations
-
-Visium spots contain mixed cells (not single-cell resolution)
-
-Pathology annotation resolution may affect front definition
-
-Sample size is limited (n = 6)
-
-Future Directions
-
-Planned extensions include:
-
-EMT and proliferation signature analysis
-
-Subtype comparison (ER+ vs TNBC)
-
-Immune microenvironment correlation
-
-Integration with additional spatial features
-
-Tools and Libraries Used
+**
+**Tools and Libraries Used**
 
 Python
 
